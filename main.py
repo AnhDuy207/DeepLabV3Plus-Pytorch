@@ -7,7 +7,7 @@ import argparse
 import numpy as np
 
 from torch.utils import data
-from datasets import VOCSegmentation, Cityscapes
+from datasets import VOCSegmentation, Cityscapes, Selfcar
 from utils import ext_transforms as et
 from metrics import StreamSegMetrics
 
@@ -27,7 +27,7 @@ def get_argparser():
     parser.add_argument("--data_root", type=str, default='./datasets/data',
                         help="path to Dataset")
     parser.add_argument("--dataset", type=str, default='voc',
-                        choices=['voc', 'cityscapes'], help='Name of dataset')
+                        choices=['voc', 'cityscapes', 'selfcar'], help='Name of dataset')
     parser.add_argument("--num_classes", type=int, default=None,
                         help="num classes (default: None)")
 
@@ -79,6 +79,8 @@ def get_argparser():
                         help="epoch interval for eval (default: 100)")
     parser.add_argument("--download", action='store_true', default=False,
                         help="download datasets")
+    parser.add_argument("--isSelfCar", type=int, default=1,
+                        help='train with selfcar (default: 1) & train with cityscapes: 0')
 
     # PASCAL VOC Options
     parser.add_argument("--year", type=str, default='2012',
@@ -150,7 +152,35 @@ def get_dataset(opts):
                                split='train', transform=train_transform)
         val_dst = Cityscapes(root=opts.data_root,
                              split='val', transform=val_transform)
+        
+    if opts.dataset == 'selfcar':
+        # def split_dataset(root_dir, train_dict, val_dict, val_size=0.1):
+        #     error_msg = "[!] valid_size should be in the range [0, 1]."
+        #     assert ((val_size >= 0) and (val_size <= 1)), error_msg
+        train_transform = et.ExtCompose([
+            et.ExtRandomCrop(size=(opts.crop_size, opts.crop_size)),
+            et.ExtColorJitter(brightness=0.5, contrast=0.5, saturation=0.5),
+            et.ExtRandomHorizontalFlip(),
+            et.ExtToTensor(),
+            et.ExtNormalize(mean=[0.485, 0.456, 0.406],
+                            std=[0.229, 0.224, 0.225]),
+        ])
+
+        val_transform = et.ExtCompose([
+            et.ExtToTensor(),
+            et.ExtNormalize(mean=[0.485, 0.456, 0.406],
+                            std=[0.229, 0.224, 0.225]),
+        ])
+        train_dst = Selfcar(root=opts.data_root,
+                               split='train', transform=train_transform, isSelfCar=opts.isSelfCar)
+        val_dst = Selfcar(root=opts.data_root,
+                             split='val', transform=val_transform, isSelfCar=opts.isSelfCar)
+    
+    
+    print("train_dst = ", train_dst)
+    print("val_dst = ", val_dst)        
     return train_dst, val_dst
+    # return train_dst
 
 
 def validate(opts, model, loader, device, metrics, ret_samples_ids=None):
@@ -210,10 +240,16 @@ def validate(opts, model, loader, device, metrics, ret_samples_ids=None):
 
 def main():
     opts = get_argparser().parse_args()
+    
+    # if opts.isSelfCar == 0:
+    #     opts.dataset = 'cityscapes'
+    
     if opts.dataset.lower() == 'voc':
         opts.num_classes = 21
     elif opts.dataset.lower() == 'cityscapes':
         opts.num_classes = 19
+    elif opts.dataset.lower() == 'selfcar':
+        opts.num_classes = 13
 
     # Setup visualization
     vis = Visualizer(port=opts.vis_port,
@@ -234,10 +270,14 @@ def main():
     if opts.dataset == 'voc' and not opts.crop_val:
         opts.val_batch_size = 1
 
+    # print("before->get_dataset")
     train_dst, val_dst = get_dataset(opts)
+    # print("after->get_dataset")
+    
     train_loader = data.DataLoader(
         train_dst, batch_size=opts.batch_size, shuffle=True, num_workers=2,
         drop_last=True)  # drop_last=True to ignore single-image batches.
+    # print("train_loader = ", train_loader)
     val_loader = data.DataLoader(
         val_dst, batch_size=opts.val_batch_size, shuffle=True, num_workers=2)
     print("Dataset: %s, Train set: %d, Val set: %d" %
@@ -322,16 +362,46 @@ def main():
     interval_loss = 0
     while True:  # cur_itrs < opts.total_itrs:
         # =====  Train  =====
+        
         model.train()
         cur_epochs += 1
+        # print("Buon ngu quaaaaaaaaaaaaa")
+        
         for (images, labels) in train_loader:
+            # print("vao ham for")
             cur_itrs += 1
+
+            batch_size = images.size(0)  # Kích thước của batch
+            # print("for -> batch_size = ", batch_size)
+            
+            for i in range(opts.batch_size):
+                # image_path = train_loader.dataset.imag[i]  # Lấy đường dẫn của hình ảnh thứ i trong batch
+                image_path = images[i]
+                image_path = str(image_path)
+                image_name = os.path.basename(image_path)
+                # print("for -> image = ", image_name)
+                
+                label_path = labels[i]
+                label_path = str(label_path)
+                label_path = os.path.basename(label_path)
+                # print("for -> label = ", label_path)
 
             images = images.to(device, dtype=torch.float32)
             labels = labels.to(device, dtype=torch.long)
+            
+            print("images = ", images.size())
+            print("labels = ", labels.size())
 
+            # print("size of images = ", images.size())
+            # print("dtype of images = ", images.dtype)
+            
+            # print("size of labels = ", labels.size())
+            # print("dtype of labels = ", labels.dtype)
+            
             optimizer.zero_grad()
             outputs = model(images)
+           
+            
             loss = criterion(outputs, labels)
             loss.backward()
             optimizer.step()
@@ -377,6 +447,8 @@ def main():
 
             if cur_itrs >= opts.total_itrs:
                 return
+            
+            # print("ket thuc ham for")
 
 
 if __name__ == '__main__':
